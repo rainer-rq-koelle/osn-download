@@ -1,0 +1,135 @@
+---
+title: "Untitled"
+output: html_document
+date: '2022-06-20'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+```
+
+playing around with some initial Borealis results
+
+* loading what is available
+
+```{r, message=FALSE, warning=FALSE}
+pth <- "../borealis-study/data_crunched"
+fns <- list.files(path = pth, pattern = "^borealis_2019", full.names = TRUE)
+
+ds  <- fns %>% 
+  purrr::map_dfr(.x, .f = ~ readr::read_csv(.x, show_col_types = FALSE))
+
+ds <- ds %>% 
+  mutate( VALUE = abs(VALUE)
+         ,VALUE = ifelse(!is.finite(VALUE), 0, VALUE))
+```
+
+```{r}
+weights_3di <- tribble(
+  ~ PHASE, ~ COMP, ~WEIGHT,
+  "CLIMB", "vertical"     , 0.6687,
+  "ENROUTE", "vertical"   , 0.7617,  
+  "DESCENT","vertical"    , 1.8712,
+  "ALL", "horizontal"     , 1.1876,
+  "AIRSPACE", "horizontal", 1.1876
+)
+
+ds <- ds %>% 
+  select(FLTID, UID, PHASE, VALUE, COMP, SCOPE_3Di, GIZMO, FIR_ID) %>% 
+  inner_join(weights_3di) %>% 
+  mutate(SCORE_3Di = VALUE * WEIGHT)
+```
+
+
+
+
+
+Flight level metric
+
+```{r}
+flm <- ds %>% 
+  filter(SCOPE_3Di == "Flight") %>% 
+  filter(SCORE_3Di < 50)
+```
+
+```{r}
+# take a random sample of n flights
+n <- 10
+flm_sample <- flm %>% group_by(UID) %>% 
+  filter(UID %in% sample(unique(flm$UID), n))
+```
+
+```{r}
+ggplot(data = flm_sample) +
+  geom_col(aes(x = SCORE_3Di * 100, y = FLTID, fill = PHASE)) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(data = flm_sample) +
+  geom_boxplot(aes(y = COMP, x = SCORE_3Di * 100, fill = COMP), width = 0.2) +
+  theme_minimal() +
+  labs(y = "component", x = "weighted 3Di score value")
+```
+
+
+```{r}
+ggplot(data = flm_sample) +
+  geom_col(aes(x = SCORE_3Di, y = FLTID, fill = PHASE)) +
+  theme_minimal()
+```
+
+single FIR flights
+
+```{r}
+single_fir_flights <- ds %>% 
+  select(FIR_ID, everything()) %>% 
+  group_by(UID) %>% 
+  summarise(FIRs = length(unique(FIR_ID))) %>% 
+  filter(FIRs == 1) %>% 
+  filter(! grepl(pattern = "NA", UID))
+
+singles <- ds %>% 
+  filter(UID %in% single_fir_flights$UID) %>% 
+  filter(!is.na(UID), SCORE_3Di < 200)
+```
+
+```{r}
+# take a random sample of n flights
+set.seed(666)
+n <- 20
+sgl_sample <- singles %>% group_by(UID) %>% 
+  filter(UID %in% sample(unique(singles$UID), n)) %>% 
+  filter(!is.na(PHASE))
+```
+
+```{r}
+ggplot(data = sgl_sample) +
+  geom_col(aes(x = SCORE_3Di, y = FLTID, fill = PHASE)) +
+  theme_minimal()
+```
+
+
+```{r}
+ds %>% group_by(FIR_ID) %>% 
+    filter(SCORE_3Di < 500) %>% 
+    summarise(N = n(), SCORE_3Di = sum(SCORE_3Di)) %>% mutate(AVERAGE = SCORE_3Di / N) %>% filter(!is.na(FIR_ID), ! FIR_ID %in% c("BIRD") ) %>% 
+ggplot() +
+  geom_col(aes(x = FIR_ID, y = AVERAGE, fill = FIR_ID)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL) +
+  theme(legend.position = "none")
+  
+  
+```
+
+
+
+
+
+
+
+

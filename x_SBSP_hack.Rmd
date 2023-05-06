@@ -1,0 +1,180 @@
+---
+title: "DECEA"
+author: "RQ"
+date: "07/07/2020"
+output: html_document
+---
+
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sf)
+library(trrrj)
+```
+
+downloaded trajectory data for SBSP and stored locally, i.e. 2019-09-01 - 2019-09-05.
+bounding box defined to cover radius of 102NM
+
+define ARP for sbsp
+
+```{r}
+arp_sbsp <- data.frame(icao = "SBSP", lat = -23.626110077, lon= -46.65638733, elev = 2631)
+```
+
+read in the downloaded data
+
+```{r}
+pth <- "./data-raw/SBXX/"
+fns <- list.files(path = pth, pattern = "^osn_SBSP_")
+
+osn_col_spec <- cols(
+  time = col_double(),
+  icao24 = col_character(),
+  lat = col_double(),
+  lon = col_double(),
+  velocity = col_double(),
+  heading = col_double(),
+  vertrate = col_double(),
+  callsign = col_character(),
+  onground = col_logical(),
+  alert = col_logical(),
+  spi = col_logical(),
+  squawk = col_double(),
+  baroaltitude = col_double(),
+  geoaltitude = col_double(),
+  lastposupdate = col_double(),
+  lastcontact = col_double(),
+  hour = col_double()
+)
+
+ds  <- paste0(pth, fns) %>%
+  purrr::map_dfr(.f=~read_csv(., col_types = osn_col_spec))
+
+ds <- ds %>% mutate(time = lubridate::as_datetime(time))
+```
+
+
+```{r}
+pick <- c("e48e78","e4926f","e4827c","e49270")
+
+picks <- ds %>% filter(time <= lubridate::ymd_hms("2019-09-01 15:00:00")
+                       ,icao24 %in% pick)
+```
+
+
+```{r}
+ggplot() +
+  geom_point(data = picks, mapping = aes(x = lon, y = lat, colour = icao24))
+```
+
+```{r}
+ggplot() +
+  geom_point(data = picks, mapping = aes(x = time, y = geoaltitude, colour = icao24))
+```
+
+
+for testing purposes restrict to before noon = all arrivals
+
+```{r}
+picks_arr <- picks %>% filter(time <= lubridate::ymd_hms("2019-09-01 12:00:00")) %>%
+  group_by(icao24) %>%
+  arrange(time, .by_group = TRUE) %>%
+  mutate(dist_arp = geosphere::distHaversine(
+                        p1 = c(arp_sbsp$lon, arp_sbsp$lat)
+                       ,p2 = cbind(lon, lat))
+      , arp_brg = geosphere::bearing(
+                        p1 = c(arp_sbsp$lon, arp_sbsp$lat)
+                       ,p2 = cbind(lon, lat))
+      ) %>%
+  # convert to NM
+  mutate( dist_arp = dist_arp / 1852)
+
+asma_df <- picks_arr %>% 
+    select(icao24, callsign, time, dist_arp, arp_brg) %>% 
+    filter(dist_arp >= 99.8 & dist_arp <= 100.2) %>%
+    summarise(time = median(time), dist_arp = median(dist_arp), brg = median(arp_brg) )
+
+asma_df
+```
+
+```{r}
+ggplot() +
+  geom_histogram(data = asma_df, mapping = aes(x = brg), binwidth = 30)
+```
+
+
+
+
+
+
+
+
+
+
+
+develop quick heuristic to check for arrivals at SBSP
+
+```{r}
+near_apt <- function(.trjs, .near_alt = 750, .near_arp = 8000){
+  candidates <- .trjs %>% 
+    group_by(icao24, callsign) %>%
+    summarise(
+       near_min_alt = min(geoaltitude, na.rm = TRUE)
+      ,near_min_darp= min(dist_arp, na.rm = TRUE)
+      ) %>%
+    filter(near_min_alt <= .near_alt, near_min_darp <= .near_arp) %>%
+    ungroup()
+  return(candidates)
+}
+```
+
+check if flights are near SBSP, i.e. within 15NM
+
+sbsp_15NM <- polygon_at_distance(c(arp_sbsp$lon, arp_sbsp$lat), 15) 
+sbsp_15NM <- sbsp_15NM %>% st_sf %>% mutate(name = "SBSP 15NM")
+
+convert positions to sf
+
+pos <- ds %>% select(icao24, lat, lon) %>%
+   st_as_sf(coords = c("lon","lat"), crs = 4326, agr = "constant")
+
+cands <- st_join(pos, sbsp_15NM, join = st_within)
+
+
+
+
+==========================
+
+rq <- ds %>% filter(time <= lubridate::ymd_hms("2019-09-02 24:00:00", tz = "UTC")) %>%
+  group_by(icao24)%>%
+  arrange(time, .by_group = TRUE) %>%
+  mutate(dt = time - lag(time)
+        ,dist = geosphere::distHaversine(p1 = cbind(lon, lat), cbind(lag(lon), lag(lat)))) %>% 
+  select(time, icao24, lat, lon, dt, dist, everything() ) %>%
+  ungroup()
+
+## basic prep
+rq <- rq %>% 
+  mutate(  dt = ifelse(is.na(dt), 0, dt)
+        ,dist = if_else(is.na(dist), 0, dist)
+        , leg = if_else(dt == 0 | dt >= 300, 1, 0)) %>%
+  select(time, icao24, leg, lat, lon, dt, dist, everything() )
+
+rq <- rq %>% group_by(icao24) %>% arrange(time, .by_group = TRUE) %>%
+  mutate(leg = cumsum(leg)) %>%
+  ungroup()
+
+flts_sf <- rq %>% group_by(icao24, leg) %>% arrange(time, .by_group = TRUE) %>%
+  select(icao24, leg, dt, dist, lat, lon, callsign, onground) %>% ungroup
+  
+flts_sf <- st_as_sf(flts_sf, coords = c("lon","lat"), crs = 4326, agr = "constant")
+
+--> check does not look like a proper sf object
+  
+sbsp_15NM <- polygon_at_distance(c(arp_sbsp$lon, arp_sbsp$lat), 15) 
+sbsp_15NM <- sbsp_15NM %>% st_sf %>% mutate(name = "SBSP 15NM")  
+
+cands <- st_join(flts_sf, sbsp_15NM, join = st_within)
+
+cands2 <- cands %>% filter(!is.na(name)) %>% group_by(icao24, leg)

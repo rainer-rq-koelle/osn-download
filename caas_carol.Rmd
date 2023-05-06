@@ -1,0 +1,164 @@
+---
+title: "OSN Data Download"
+author: "Rainer/Carol"
+date: "20/06/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(osn)
+library(dplyr)
+library(readr)
+library(ggplot2)
+source("./R/bounding_box.R")
+source('./R/osn_query_apt_bbox.R')
+```
+
+Quick hack bounding box for polygon
+
+* could be read in from file, table, etc. 
+* here we quickly define a tribble (row-tibble)
+
+```{r}
+pg <- tribble(
+  ~LAT, ~LON
+  ,1.379261 ,104.1181
+  ,1.379256 ,104.1418
+  ,1.385081 ,104.1649
+  ,1.383614 ,104.1821
+  ,1.375419 ,104.1828
+  ,1.353847 ,104.1826
+  ,1.343792 ,104.1609
+  ,1.341958 ,104.1369
+  ,1.360036 ,104.1177
+)
+
+bb <- c(xmin = min(pg$LON), ymin = min(pg$LAT), xmax = max(pg$LON), ymax = max(pg$LAT))
+bb
+```
+
+For bounding box, we coerce to c(xmin, ymin, xmax, ymax): `r bb`.
+
+Quick visual hack
+
+```{r}
+arp_wsss <- data.frame(ICAO = "WSSS", LAT = 1.35019, LON = 103.994003, ELEV = 22)
+
+g <- ggplot()+
+  geom_polygon(data = pg, mapping = aes(x = LON, y = LAT), colour = "black", fill = NA) +
+  geom_point(data = pg, mapping = aes(x = LON, y = LAT)) +
+  geom_vline(xintercept = c(104.115, 104.185), colour = "blue", linetype = "dashed") +
+  geom_hline(yintercept = c(1.34, 1.387), colour = "blue", linetype = "dashed") +
+  geom_point(data = arp_wsss, mapping = aes(x = LON, y = LAT), size = 4, colour = "Cornflowerblue") +
+  theme_minimal()
+g
+```
+
+```{r}
+# bounding box, i.e. xmin ...
+# note: query osn::state_vector() requires named bb elements
+bb_buf <- c(xmin = 104.115, ymin = 1.34, xmax = 104.185, ymax = 1.387)
+# bb_buf <- c(xmin = 103.9, ymin = 1.325, xmax = 104.3, ymax = 1.425)
+
+extract_osn_adsb <- function(.start_date, .session, .bbox){
+  start_dy <- lubridate::date(.start_date)
+  adsb     <- query_osn(.start_date, .session, .bbox)
+}
+
+write_adsb <- function(.adsb, .start_date,...){
+  ## construct filename
+  start_dy <- lubridate::date(.start_date)
+  start_hr <- lubridate::hour(.start_date)
+  end_hr   <- start_hr + 1
+  
+  out_fn <- paste0(
+  "./data-raw/caas/osn_caas_"
+  ,start_dy, "_", sprintf("%02d",start_hr), "00-"
+                       , sprintf("%02d",end_hr),"00.csv"
+  ) ############# end file-name
+  message("writing ", out_fn)
+  write_csv(.adsb, out_fn)
+}
+
+download_osn <- function(.start_date, .session, .bbox, ...){
+  adsb <- extract_osn_adsb(.start_date, .session, .bbox)
+  write_adsb(adsb, .start_date)
+}
+```
+
+From Sep 2019 - jan 2020
+
+```{r}
+session <- osn_connect(usr    = Sys.getenv("osn_usr") , passwd = Sys.getenv("osn_pw"))
+# from work: session <- osn_connect(Sys.getenv("osn_usr"), host = "localhost", port = 6666)
+(t_start = Sys.time())
+
+############## DOWNLOAD HORIZON ##################################
+
+horizon <- seq(
+  as.POSIXct("2020-01-27 17:00:00",tz="UTC")  # start date
+ ,as.POSIXct("2020-01-31 23:00:00",tz="UTC")  # horizon end date 23:00hrs
+  , by="hour")
+
+############## ITERATE AND DOWNLOAD ###############################
+
+horizon %>% purrr::walk(
+  .f=~download_osn(., .session=session, .bbox = bb_buf)
+  )
+
+############### CLOSE SESSION WHEN DONE ###########################
+(t_end = Sys.time())
+(t_dur = t_end - t_start)
+
+osn::osn_disconnect(session)
+```
+
+```{r}
+caas <- list.files(path = "./data-raw/caas/", pattern = "osn_caas_")
+caas <- paste0("./data-raw/caas/", caas)
+
+osn_col_spec <- cols(
+  time = col_double(),
+  icao24 = col_character(),
+  lat = col_double(),
+  lon = col_double(),
+  velocity = col_double(),
+  heading = col_double(),
+  vertrate = col_double(),
+  callsign = col_character(),
+  onground = col_logical(),
+  alert = col_logical(),
+  spi = col_logical(),
+  squawk = col_character(),
+  baroaltitude = col_double(),
+  geoaltitude = col_double(),
+  lastposupdate = col_double(),
+  lastcontact = col_double(),
+  hour = col_double()
+)
+
+ds <- caas %>% purrr::map_dfr(.f = ~read_csv(., col_types = osn_col_spec))
+```
+
+```{r}
+# add points to previous vis
+g + geom_point(data = ds %>% select(icao24, lat, lon)
+               , mapping = aes(x = lon, y = lat), shape = ".", alpha = 0.05)
+```
+
+Package for Carol
+
+```{r}
+tmp <- ds %>% select(time, icao24, callsign, lat, lon, geoaltitude, baroaltitude) %>% 
+  mutate(time = lubridate::as_datetime(time))
+
+readr::write_csv2(tmp, here::here("./data/caas_20190901-20200131.csv.gz"))
+```
+
+
+
+
+
+
+

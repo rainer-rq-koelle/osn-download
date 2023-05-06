@@ -1,0 +1,287 @@
+---
+title: "VTBS"
+author: "Performance Review Unit"
+date: "02/06/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+pth <- "./data-raw/"
+fns <- list.files(path = pth, pattern = "^osn_VTBS_")
+
+osn_col_spec <- cols(
+  time = col_double(),
+  icao24 = col_character(),
+  lat = col_double(),
+  lon = col_double(),
+  velocity = col_double(),
+  heading = col_double(),
+  vertrate = col_double(),
+  callsign = col_character(),
+  onground = col_logical(),
+  alert = col_logical(),
+  spi = col_logical(),
+  squawk = col_double(),
+  baroaltitude = col_double(),
+  geoaltitude = col_double(),
+  lastposupdate = col_double(),
+  lastcontact = col_double(),
+  hour = col_double()
+)
+
+ds  <- paste0(pth, fns) %>%
+  purrr::map_dfr(.f=~read_csv(., col_types = osn_col_spec))
+
+ds <- ds %>% mutate(time = lubridate::as_datetime(time))
+```
+
+
+ ICAO    LON   LAT  ELEV
+  <chr> <dbl> <dbl> <dbl>
+1 VTBS   101.  13.7     5
+
+https://skyvector.com/airport/VTBS/Suvarnabhumi-International-Airport
+converted with: https://www.rapidtables.com/convert/number/degrees-minutes-seconds-to-degrees.html
+
+```{r}
+arp_vtbs <- data.frame(icao = "VTBS", lat = 13.68583, lon = 100.7488)
+arp_vtbd <- data.frame(icao = "VTBD", lat = 13.912599, lon= 100.6070)
+```
+
+```{r}
+tmp <- ds %>% filter(geoaltitude <= 1000)
+
+tmp2<- tmp %>% 
+  group_by(icao24, callsign) %>% 
+  summarise( N = n()
+            ,min_time = min(time, na.rm = TRUE), max_time = max(time, na.rm = TRUE)
+            ,ong = sum(onground, na.rm = TRUE))
+```
+  
+```{r}
+ggplot(data = tmp, mapping = aes(x = lon, y = lat)) + 
+  geom_point() +
+  geom_point(data = arp_vtbs, mapping = aes(x = lon, y = lat), colour = "green", size = 6)
+```
+
+```{r}
+picks <- c("880446","3c15be","7813b5","8991b8","7582e3")
+flts  <- ds %>% 
+  filter(icao24 %in% picks)
+
+ggplot() + 
+  geom_point(
+     data    = flts
+    ,mapping = aes(x = lon, y = lat, colour = callsign)
+  ) +
+  geom_point(
+     data    = arp_vtbs
+    ,mapping = aes(x = lon, y = lat), colour = "green", size = 6
+    ) +
+  geom_point(
+     data    = arp_vtbd
+    ,mapping = aes(x = lon, y = lat), colour = "purple", size = 6
+    )
+```
+
+```{r}
+ggplot() +
+  geom_point(
+     data    = flts
+    ,mapping = aes(x = time, y = geoaltitude, colour = callsign)
+  )
+```
+
+```{r}
+dlh792_793 <- flts %>% filter(icao24 == "3c15be")
+
+append_dist_arp <- function(.trjs, .arp_lat, .arp_lon){
+  df <- .trjs %>%  
+    mutate(
+       arp_lat  = .arp_lat , arp_lon = .arp_lon
+      ,dist_arp = geosphere::distHaversine( p1 = cbind(lon, lat)
+                                           ,p2 = cbind(arp_lon,arp_lat)) 
+      )
+  return(df)
+}  
+ 
+dlh792_793 <- dlh792_793 %>% append_dist_arp(arp_vtbs$lat, arp_vtbs$lon)
+
+ggplot() +
+  geom_point(
+     data    = dlh792_793
+    ,mapping = aes(x = time, y = geoaltitude, colour = callsign)
+  )
+```
+
+```{r}
+ggplot() +
+  geom_point(
+    data = dlh792_793
+    ,mapping = aes(x = time, y = dist_arp, colour = callsign)
+  )
+```
+
+distance-altitude
+
+```{r}
+g <- ggplot() +
+  geom_point(
+    data = dlh792_793
+    ,mapping = aes(x = dist_arp,  y = geoaltitude, colour = callsign)
+  ) +
+  geom_vline(xintercept = 10000, colour = "green") +
+  geom_hline(yintercept = 800,  colour = "green") + 
+  theme_minimal()
+g
+```
+
+zoom
+
+```{r}
+g + xlim(0, 15000) + ylim(0, 1500)
+```
+
+downsample for arrival and departure candidates
+
+* filter trajectories for alt below threshold and distance arp below threshold
+
+```{r}
+near_apt <- function(.trjs, .near_alt = 750, .near_arp = 8000){
+  candidates <- .trjs %>% 
+    group_by(icao24, callsign) %>%
+    summarise(
+       near_min_alt = min(geoaltitude, na.rm = TRUE)
+      ,near_min_darp= min(dist_arp, na.rm = TRUE)
+      ) %>%
+    filter(near_min_alt <= .near_alt, near_min_darp <= .near_arp) %>%
+    ungroup()
+  return(candidates)
+}
+```
+
+```{r}
+dlh792_793 %>% near_apt()
+```
+
+```{r}
+vtbs_tfc <- ds %>% 
+  append_dist_arp(arp_vtbs$lat, arp_vtbs$lon) %>%
+  near_apt()
+```
+
+A tibble: 1,176 x 4
+icao24 callsign near_min_alt near_min_darp
+   <chr>  <chr>           <dbl>         <dbl>
+ 1 040045 ETH608           236.         4804.
+ 2 040045 ETH609           244.         5188.
+ 3 040045 NA               343.         4717.
+ 4 04c11a KQA886           190.         5425.
+ 5 04c11a KQA887           236.         6259.
+ 6 04c11a NA               297.         5450.
+ 
+results show tibble with various NAs --> need to clean trajectory and fill blanks
+on callsign
+
+omitting NA
+> vtbs_tfc %>% na.omit()
+# A tibble: 926 x 4
+   icao24 callsign near_min_alt near_min_darp
+   <chr>  <chr>           <dbl>         <dbl>
+ 1 040045 ETH608           236.         4804.
+ 2 040045 ETH609           244.         5188.
+ 3 04c11a KQA886           190.         5425.
+ 4 04c11a KQA887           236.         6259.
+ 5 05a054 DQA364           267.         4782.
+ 6 05a05d DQA378           251.         5504.
+ 
+ do some cleaning with 040045 ETH608 and 609
+ 
+```{r}
+eth608_609 <- ds %>% filter(icao24 == "040045")
+colSums(is.na(eth608_609))
+```
+
+"only" 4 callsigns are missing!
+ 
+ggplot() + geom_point(data = ds %>% filter(icao24 %in% c("899121","884341")), mapping = aes(x = lon, y = lat, colour = icao24)) + geom_point(data = arp_vtbs, mapping = aes(x = lon, y = lat), colour = "green", size = 5)
+
+```{r}
+append_dtime <- function(.trjs){
+  trjs <- .trjs %>% 
+    group_by(icao24) %>%
+    arrange(time) %>%
+    mutate(
+      dtime = time - lag(time)
+     ,dtime = if_else(is.na(dtime), as.difftime(0, units = "secs"), dtime)  
+     ) %>%
+    ungroup()
+}
+
+append_leg <- function(.trjs, .max_leg_gap = 300){
+  trjs <- .trjs %>%
+    group_by(icao24) %>% arrange(time) %>%
+    mutate(
+     leg = as.numeric(dtime) > .max_leg_gap | as.numeric(dtime) == 0
+    ,leg = cumsum(leg == TRUE)
+    ) %>%
+    ungroup()
+}
+
+fill_callsign <- function(.trjs){
+  trjs <- .trjs %>%
+    group_by(icao24) %>% arrange(time) %>%
+    tidyr::fill(callsign, .direction = "updown") %>%
+    ungroup()
+}
+```
+
+```{r}
+tfc <- ds %>%
+  filter(icao24 %in% vtbs_tfc$icao24) %>%
+  append_dist_arp(arp_vtbs$lat, arp_vtbs$lon) %>%
+  append_dtime() %>%
+  append_leg() %>%
+  fill_callsign()
+```
+
+do some stats
+
+```{r}
+tfc_stats <- tfc %>% group_by(icao24, callsign) %>%
+  summarise(
+     hits = n()
+    ,legs = length(unique(leg))
+  )
+```
+
+check direction of flight: going to / from airport, never are closer than x
+
+
+GARBAGE - NOT SURE WHY - KEEP FOR A WHILE =============================
+
+DONE - break down into 2 functions
+- identify leg(s)
+- fill callsign
+
+bkp <- ds %>% filter(icao24 == "884341") %>%
+  append_dtime() %>%
+  mutate(
+     leg = as.numeric(dtime) > 300 | as.numeric(dtime) == 0
+    ,leg = cumsum(leg == TRUE)
+    ) %>%
+  group_by(icao24, leg) %>%
+  tidyr::fill(callsign, .direction = "downup") %>%
+  ungroup()
+
+bkp <- ds %>% filter(icao24 == "884341") %>%
+  filter(icao24 %in% vtbs_tfc$icao24) %>%
+  append_dtime() %>%
+  append_leg() %>%
+  fill_callsign()
+

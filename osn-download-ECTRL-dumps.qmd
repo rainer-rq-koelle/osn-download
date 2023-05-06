@@ -1,0 +1,87 @@
+---
+title: "Download ECTRL dumps"
+format: html
+---
+
+Download dumps from OSN 
+
+```{r}
+library(dplyr)
+
+source("./R/osn_dumps.R")
+```
+
+OSN stored files in https://opensky-network.org/datasets/eurocontrol/
+
+```{r}
+url_to_dumps <- "https://opensky-network.org/datasets/eurocontrol/"
+osn_list_dumps(url_to_dumps)
+```
+
+```{r}
+dump_dates     <- osn_list_dumps(url_to_dumps) %>% pull(X1)
+download_links <- dump_dates %>% 
+  purrr::map(.f = ~construct_dump_download_links(.x, url_to_dumps)) %>% 
+  purrr::reduce(.f = c)
+```
+
+trial - checking how to download from OSN
+
+```{}
+my_url <- paste0(url_to_dumps, dump_dates)
+my_url
+```
+
+```{}
+hour_chunks <-
+    rvest::read_html(my_url) %>%
+    rvest::html_element("tbody") %>%
+    rvest::html_table() %>%
+    dplyr::filter(grepl(pattern = "[0-9]{2}", x = X1))
+hour_chunks
+
+hour_links <- paste0(my_url, "/", dplyr::pull(hour_chunks, X1))
+hour_links
+```
+
+download one
+
+above we have a verctor for download links now ... 
+
+```{}
+target_path <- "~/RProjects/__DATA/OSN-dumps"
+hour_links[6:24] %>% purrr::walk(.f = ~osn_download_hour_dump(.x, .dest_path = target_path))
+```
+
+this is how we run the full monkey!
+
+check what is already available
+```{r}
+target_path <- "~/RProjects/__DATA/OSN-dumps"
+available   <- data.frame(STATES = list.files(target_path, pattern = "states_")) %>% 
+  mutate(DOF_HR = stringr::str_sub(STATES, 8, 20))
+
+must_download <- data.frame(LINKS = download_links) %>% 
+  mutate( DOF_HR = stringr::str_sub(LINKS,50,62)
+         ,DOF_HR = gsub(pattern = "/", replacement = "-", x = DOF_HR))
+
+must_download <- must_download %>% anti_join(available, by = "DOF_HR")
+
+download_links <- must_download %>% pull(LINKS)
+```
+
+revised downloads ~ 3350 --> 1:1000
+after timeout during night 3466 --> 1:1000 starting with 2019-08-31 12
+
+```{r, echo=FALSE, message=FALSE}
+target_path <- "~/RProjects/__DATA/OSN-dumps"
+# check options
+# getOption("timeout")   # defaults to 60[secs]
+# ----------- set longer timeout option
+options(timeout=600)
+
+download_links[1:500] %>% 
+  purrr::walk(.f = ~osn_download_hour_dump(.x, .dest_path = target_path))
+```
+
+2019-08-14-13

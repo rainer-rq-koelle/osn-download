@@ -1,0 +1,127 @@
+---
+title: "apt check"
+author: "Performance Review Unit"
+date: "16/05/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, message=FALSE}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+```
+
+```{r}
+pth  <- "./data-raw/"
+ptn  <- "osn_EDDM_R42_"
+```
+
+```{r load_function}
+#' read in OSN state vector data
+#'
+#' utility function to read in OSN state vectors  
+#'
+#' @param .pth path to the downloaded state vector file(s)
+#' @param .pattern pattern to pick/differentiate different files
+#'
+#' @return data frame / tibble of ADSB positions
+#'
+#' @export
+
+load_osn <- function(.pattern, .path, ...){
+  # list files and construct filename(s)
+  fns  <- list.files(path = .path , pattern = .pattern)
+  pfns <- paste0(.path, fns)
+
+  osn_colspec <- cols(
+    time = col_double(),
+    icao24 = col_character(),
+    lat = col_double(),
+    lon = col_double(),
+    velocity = col_double(),
+    heading = col_double(),
+    vertrate = col_double(),
+    callsign = col_character(),
+    onground = col_logical(),
+    alert = col_logical(),
+    spi = col_logical(),
+    squawk = col_double(),
+    baroaltitude = col_double(),
+    geoaltitude = col_double(),
+    lastposupdate = col_double(),
+    lastcontact = col_double(),
+    hour = col_double()
+    )
+
+  df  <- pfns %>% 
+    purrr::map_dfr(.f = ~ readr::read_csv(., col_types = osn_colspec))
+  
+  # coerce time to datetime
+  df  <- df %>% mutate(time = lubridate::as_datetime(time, tz="UTC"))
+  
+  return(df)
+}
+```
+
+EDDM Munich southern runway & part of taxiway/apron okish, tested for 17.07.2019 
+nothern runway arrival/departures, possibly no landing/take-off roll
+EDDM ARP seems to be offset to the North of the airport, check coordinates!
+
+## EDDK Cologne-Bonn
+
+> apt
+# A tibble: 1 x 4
+  ICAO    LON   LAT  ELEV
+  <chr> <dbl> <dbl> <dbl>
+1 EDDK   7.14  50.9   302
+
+boxfinder: 7.101219,50.847602,7.180183,50.886269
+
+```{r eddk}
+ds <- load_osn(.pattern = "osn_EDDK_R42_2019-07", .path = "./data-raw/")
+
+rq <- ds %>% filter(lat > 50.845, lat < 50.89, lon > 7.10, lon < 7.18) %>%
+  filter(onground == TRUE | is.na(baroaltitude) | baroaltitude < 300 |
+           is.na(geoaltitude) | geoaltitude < 300)
+
+ggplot() +
+  geom_point(data = rq, mapping = aes(x = lon, y = lat, colour = icao24), show.legend = FALSE) +
+  geom_point(data = data.frame(LON = 7.14, LAT = 50.9)
+             , mapping = aes(x = LON, y = LAT), colour = "green", size = 4) +
+  geom_point(data = data.frame(LON = 7.14273, LAT = 50.86589)
+             , mapping = aes(x = LON, y = LAT), colour = "green", size = 4) +
+  theme_minimal() +
+  xlim(7.130, 7.155) + ylim(50.850, 50.880)
+```
+
+## EDDL
+
+bboxfinder: 6.738258,51.271646,6.795679,51.301807
+
+```{r eddl}
+ds <- load_osn(.pattern = "osn_EDDL_R42_2019-07", .path = "./data-raw/")
+
+rq <- ds %>% filter(lat > 51.272, lat < 51.300, lon > 6.738, lon < 6.795) %>%
+  filter(onground == TRUE | is.na(baroaltitude) | baroaltitude < 200 |
+           is.na(geoaltitude) | geoaltitude < 200)
+
+ggplot() +
+  geom_point(data = rq, mapping = aes(x = lon, y = lat, colour = icao24), show.legend = FALSE) +
+  geom_point(data = data.frame(LON = 6.7668, LAT = 51.2895)
+             , mapping = aes(x = LON, y = LAT), colour = "green", size = 4) +
+  theme_minimal()
+```
+
+```{r}
+tmp <- rq %>% filter(icao24 %in% c("4bcdd5","4ba9e4","34560f","3c15c0"))
+
+ggplot() +
+  geom_point(data = tmp, mapping = aes(x = lon, y = lat, colour = callsign)) +
+  theme_minimal()
+```
+
+

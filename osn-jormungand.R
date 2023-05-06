@@ -1,0 +1,116 @@
+######## BOREALIS PROJECT -- JORMUNGAND DOWNLOAD
+
+library(tidyverse)
+library(readr)
+library(osn)
+#source("./R/bounding_box.R")
+#source('./R/osn_query_apt_bbox.R')
+
+################## AIRPORT INFORMATION ##################################
+# https://www.airport-data.com/api/ap_info.json?icao=ESSA
+library(httr)
+library(jsonlite)
+
+# helper function to retrieve apt information
+# get_apt_info <- function(.icao){
+#   request <- httr::GET("https://www.airport-data.com/api/ap_info.json", query = list(icao=.icao))
+#   payload <- jsonlite::fromJSON(rawToChar(request$content))
+#   payload <- tibble::as_tibble(payload)
+#   return(payload)
+# }
+#
+# apt <- get_apt_info("LSZH") %>%
+#   rename(ICAO = icao, LAT = latitude, LON = longitude) %>%
+#   mutate(LAT = as.numeric(LAT), LON = as.numeric(LON))
+
+
+################### DEFINE BOUNDING BOX ##############################
+# radius <- 22 # 42NM adding buffer to 40NM
+#
+# calc_bb <- function(.apt, .dist=radius){
+#   apt_bb <- bounding_box(lat = .apt$LAT, lon = .apt$LON, .dist)
+#   # coerce apt_bb matrix into vector c(LONmin, LONmax, LATmin, LATmax)
+#   apt_bb <- apt_bb %>% t() %>% as.vector()
+#   # apply naming convention for Opensky Network
+#   names(apt_bb) <- c("xmin","xmax","ymin","ymax")
+#   return(apt_bb)
+# }
+#
+# bbox <- calc_bb(apt, radius)
+
+# bbox_eddf_trjs <- c(xmin = 7.536746, xmax = 9.604390, ymin = 49.36732, ymax = 50.69920)
+# bbox ESSA: 16.53400 19.30323 58.95242 60.35147
+# LSZH 22NM: 8.007157  9.091177 47.098302 47.831142
+# Borealis-Jormungand: Bounding box: xmin: -40.03492 ymin: 44.55098 xmax: 33.15494 ymax: 82.44805
+bbox <- c(xmin = -40.03492, xmax = 33.15494, ymin = 44.55098, ymax = 82.44805)
+apt <- data.frame(ICAO = 'jormungand')
+
+######################################
+# query Opensky Network helper functions
+######################################
+
+extract_osn <- function(.start_datetime, .end_datetime, .session, .bbox, .icao24 = NULL, ...){
+  adsb <- state_vector( session = .session
+                        ,wef = .start_datetime
+                        ,til = .end_datetime
+                        ,bbox = .bbox
+                        ,icao24 = .icao24)
+}
+
+construct_filename <- function(.apt_icao = "jormungand", .start_datetime, .end_datetime, .id="3Di", .folder="data-raw",  .subfolder="BOREALIS"){
+  start_dy <- lubridate::date(.start_datetime)
+  start_hr <- lubridate::hour(.start_datetime)
+  end_hr   <- lubridate::hour(.end_datetime)
+  
+  fn <- paste0("./", .folder, "/")
+  if(!is.null(.subfolder)){ fn <- paste0(fn, .subfolder, "/")}
+  fn <- paste0(fn, "osn_", .apt_icao, "_", .id, "_")
+  fn <- paste0(fn, start_dy, "_" ,sprintf("%02d",start_hr), "00-", sprintf("%02d",end_hr),"00.feather")
+  
+  return(fn)
+}
+
+download_osn <- function(.apt, .start_datetime, .end_datetime, .session, .bbox, ...){
+  # extract from OSN
+  then_time <- Sys.time()
+  message(paste0("\nExtracting data for ", .apt$ICAO, ". (started at: ", then_time, " )"))
+  adsb <- extract_osn(.start_datetime, .end_datetime, .session, .bbox, ...)
+  
+  # save on disk
+  fn <- construct_filename(.apt$ICAO, .start_datetime, .end_datetime, ...)
+  #readr::write_csv(adsb, fn)
+  arrow::write_feather(adsb, sink = fn)
+  message(paste0("---------- data written: ", fn, " with ", Sys.time() - then_time))
+}
+
+#################################################################
+######  FOR DOWNLOAD - SESSION ##################################
+
+session <- osn_connect(usr    = Sys.getenv("osn_usr") , passwd = Sys.getenv("osn_pw"))
+## at work: launch putty and go via VPN tunnel ##################
+## ... asks for password
+# session <- osn_connect(Sys.getenv("osn_usr"), host = "localhost", port = 6666)
+
+############## DOWNLOAD HORIZON ##################################
+
+horizon <- seq(
+  as.POSIXct("2020-08-01 00:00:00",tz="UTC")  # start date
+  ,as.POSIXct("2020-08-01 23:00:00",tz="UTC")  # horizon end date 23:00hrs
+  , by="hour")
+
+############## ITERATE AND DOWNLOAD ###############################
+
+`horizon[-c(1:12)] %>%
+  purrr::walk(
+    .f = ~ download_osn(
+      .apt = apt
+      , .session = session
+      , .start_datetime = .
+      , .end_datetime   = . + 3600   # add one hour = 3600 sec
+      , .bbox   = bbox
+    )
+  )
+
+############### CLOSE` SESSION WHEN DONE ###########################
+
+osn::osn_disconnect(session)
